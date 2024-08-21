@@ -19,8 +19,7 @@ class GPTQ:
         self.layer = layer
         self.dev = self.layer.weight.device
         W = layer.weight.data.clone()
-        self.rows = W.shape[0]
-        self.columns = W.shape[1]
+        self.rows, self.columns = W.shape
         self.H = torch.zeros((self.columns, self.columns), device=self.dev)
         self.nsamples = 0
         self.quantizer = Quantizer()
@@ -39,22 +38,13 @@ class GPTQ:
         self.H *= self.nsamples / (self.nsamples + tmp)
         self.nsamples += tmp
         if not hasattr(self, 'avg_input'):
-          self.avg_input = torch.zeros_like(inp)
-        self.avg_input += inp.float()/self.nsamples
+            self.avg_input = torch.zeros_like(inp)
+        self.avg_input += inp.float() / self.nsamples
         inp = math.sqrt(2 / self.nsamples) * inp.float()
         self.H += inp.matmul(inp.t())
 
-    def fasterquant(
-        self,
-        blocksize=128,
-        percdamp=0.01,
-        group_size=-1,
-        actorder=False,
-        static_groups=False
-    ):
-        W = self.layer.weight.data.clone()
-        W = W.float()
-
+    def fasterquant(self, blocksize=128, percdamp=0.01, group_size=-1, actorder=False, static_groups=False):
+        W = self.layer.weight.data.clone().float()
         tick = time.time()
 
         if not self.quantizer.ready():
@@ -66,18 +56,15 @@ class GPTQ:
         H[dead, dead] = 1
         W[:, dead] = 0
 
-        g_idx = []
-        scale = []
-        zero = []
+        g_idx, scale, zero = [], [], []
         now_idx = 1
 
         if static_groups:
             import copy
-
             groups = []
             for i in range(0, self.columns, group_size):
                 quantizer = copy.deepcopy(self.quantizer)
-                quantizer.find_params(W[:, i : (i + group_size)], weight=True)
+                quantizer.find_params(W[:, i:(i + group_size)], weight=True)
                 scale.append(quantizer.scale)
                 zero.append(quantizer.zero)
                 groups.append(quantizer)
@@ -97,7 +84,7 @@ class GPTQ:
         H = torch.linalg.cholesky(H)
         H = torch.cholesky_inverse(H)
         H = torch.linalg.cholesky(H, upper=True)
-        H = H * torch.diag(H).unsqueeze(1) # rescale each row in H by the corresponding diagonal element in H
+        H = H * torch.diag(H).unsqueeze(1)
         Hinv = H
         X = self.avg_input.float()
 
@@ -120,8 +107,7 @@ class GPTQ:
                 if group_size != -1:
                     if not static_groups:
                         if (i1 + i) % group_size == 0:
-                            self.quantizer.find_params(W[:, (i1 + i) : (i1 + i + group_size)], weight=True)
-
+                            self.quantizer.find_params(W[:, (i1 + i):(i1 + i + group_size)], weight=True)
                         if ((i1 + i) // group_size) - now_idx == -1:
                             scale.append(self.quantizer.scale)
                             zero.append(self.quantizer.zero)
@@ -135,20 +121,15 @@ class GPTQ:
                 q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d**2
-                err1 = (w-q) / d
+                err1 = (w - q) / d
                 
-                #diff = W1 - Q1
-                #if i != count - 1:
-                #    diff[:, i+1:] = 0
-
                 grad1 = 2 * ((W1 - Q1).matmul(X1)).matmul(X1.t())
                 Hinv1_Grad = Hinv1.matmul(grad1.t()).t()
                 hinv_grad_d1 = Hinv1_Grad[:, i] / d
-                #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(grad1))}")
                 
                 original_term = err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
-                term1=Hinv1.matmul(grad1.t()).t()[:, i:]
-                term2=(hinv_grad_d1).unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                term1 = Hinv1.matmul(grad1.t()).t()[:, i:]
+                term2 = (hinv_grad_d1).unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
 
                 W1[:, i:] += -original_term - (term1 - term2) * 0.001**2
                 Err1[:, i] = err1
@@ -158,8 +139,8 @@ class GPTQ:
             Losses[:, i1:i2] = Losses1 / 2
             Grad = 2 * ((W - Q).matmul(X)).matmul(X.t())
             Hinv_Grad = Hinv.matmul(Grad.t()).t()
-            term1=Hinv.matmul(Grad.t()).t()[:, i2:]
-            term2=(Hinv_grad_d1).matmul(Hinv[i1:i2, i2:])
+            term1 = Hinv.matmul(Grad.t()).t()[:, i2:]
+            term2 = (Hinv_grad_d1).matmul(Hinv[i1:i2, i2:])
 
             W[:, i2:] += -Err1.matmul(Hinv[i1:i2, i2:]) - (term1 - term2) * 0.001**2
 
@@ -201,6 +182,5 @@ class GPTQ:
         self.Losses = None
         self.Trace = None
         torch.cuda.empty_cache()
-
 
 __all__ = ["GPTQ"]
