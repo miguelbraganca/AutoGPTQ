@@ -64,7 +64,6 @@ class BaseQuantizeConfig(PushToHubMixin):
     desc_act: bool = field(default=True)
     static_groups: bool = field(default=False)
     sym: bool = field(default=True)
-    L : bool = field(default=0.1)
     true_sequential: bool = field(default=True)
     quant_method: str = field(default=QUANT_METHOD.GPTQ)
     checkpoint_format: str = field(default=CHECKPOINT_FORMAT.GPTQ)

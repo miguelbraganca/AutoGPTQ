@@ -9,10 +9,6 @@ import transformers
 
 from .quantizer import Quantizer
 
-from .hqq import quantize as hqq_quantize
-from .hqq import dequantize as hqq_dequantize
-from ..utils.stochastic_comb import stochastically_combine_tensors as stochastic_comb
-
 logger = getLogger(__name__)
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -54,8 +50,7 @@ class GPTQ:
         percdamp=0.01,
         group_size=-1,
         actorder=False,
-        static_groups=False,
-        L = 0.2
+        static_groups=False
     ):
         W = self.layer.weight.data.clone()
         W = W.float()
@@ -64,18 +59,6 @@ class GPTQ:
 
         if not self.quantizer.ready():
             self.quantizer.find_params(W, weight=True)
-
-        hqq_group_size = group_size if group_size != -1 else None
-
-        hqq_quant_config = {
-            'weight_quant_params': {'nbits': self.quantizer.bits, 'channel_wise': self.quantizer.perchannel, 'group_size': hqq_group_size, 
-                                    'optimize': True, 'round_zero': False, 'axis': 1, 'view_as_float': False},
-            'scale_quant_params': None,
-            'zero_quant_params': None}
-        
-        _ , meta_hqq, Q_hqq = hqq_quantize(W, **hqq_quant_config)
-        W_hqq = hqq_dequantize(_, meta_hqq)        
-        del _
 
         H = self.H
         del self.H
@@ -124,7 +107,6 @@ class GPTQ:
 
             W1 = W[:, i1:i2].clone()
             Q1 = W1.clone()
-            W1_hqq = W_hqq[:, i1:i2].clone()
             Err1 = torch.zeros_like(W1)
             Hinv_grad_d1 = torch.zeros_like(W1)
             Losses1 = torch.zeros_like(W1)
@@ -133,7 +115,6 @@ class GPTQ:
 
             for i in range(count):
                 w = W1[:, i]
-                w_hqq = W1_hqq[:, i]
                 d = Hinv1[i, i]
 
                 if group_size != -1:
@@ -155,10 +136,12 @@ class GPTQ:
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d**2
                 err1 = (w-q) / d
-                diff = W1 - Q1
-                if i != count - 1:
-                    diff[:, i+1:] = 0
-                grad1 = 2 * ((diff).matmul(X1)).matmul(X1.t())
+                
+                #diff = W1 - Q1
+                #if i != count - 1:
+                #    diff[:, i+1:] = 0
+
+                grad1 = 2 * ((W1 - Q1).matmul(X1)).matmul(X1.t())
                 Hinv1_Grad = Hinv1.matmul(grad1.t()).t()
                 hinv_grad_d1 = Hinv1_Grad[:, i] / d
                 #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(grad1))}")
@@ -196,9 +179,7 @@ class GPTQ:
             Q = Q[:, invperm]
             g_idx = g_idx[invperm]
 
-        finalQ = Q
-
-        self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
+        self.layer.weight.data = Q.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
 
         logger.info(f"Layer L2 Loss: {torch.sum((self.layer(self.inp1) - self.out1) ** 2)}")
         logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(Grad))}")

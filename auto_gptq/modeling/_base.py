@@ -356,8 +356,7 @@ os.environ['NUMEXPR_MAX_THREADS'] = max_threads
                         percdamp=self.quantize_config.damp_percent,
                         group_size=self.quantize_config.group_size,
                         actorder=self.quantize_config.desc_act,
-                        static_groups=self.quantize_config.static_groups,
-                        L = self.quantize_config.L,
+                        static_groups=self.quantize_config.static_groups
                     )
                     quantizers[f"{self.layers_block_name}.{i}.{name}"] = (
                         gptq[name].quantizer.to(CPU if force_layer_back_to_cpu else cur_layer_device),
